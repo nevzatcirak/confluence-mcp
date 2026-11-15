@@ -1,0 +1,49 @@
+{
+  "name": "@nevzatcirak/confluence-mcp",
+  "version": "0.1.0",
+  "description": "Deployment-agnostic Confluence MCP server (stdio) for Confluence Server / Data Center, with a Cloud adapter seam — compact cards, pagination-aware listings, optimistic-lock-safe writes",
+  "type": "module",
+  "license": "MIT",
+  "author": "Nevzat Cirak",
+  "homepage": "https://github.com/nevzatcirak/confluence-mcp#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/nevzatcirak/confluence-mcp.git" },
+  "bugs": { "url": "https://github.com/nevzatcirak/confluence-mcp/issues" },
+  "publishConfig": { "@nevzatcirak:registry": "https://registry.npmjs.org/" },
+  "engines": { "node": ">=20" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "confluence-mcp": "dist/index.js",
+    "confluence-mcp-server": "dist/index.js"
+  },
+  "keywords": [
+    "confluence",
+    "mcp",
+    "model-context-protocol",
+    "server",
+    "data-center",
+    "cloud",
+    "page",
+    "space"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "check:org": "node scripts/check-org.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "eslint": "^9.20.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^3.0.0"
+  }
+}
