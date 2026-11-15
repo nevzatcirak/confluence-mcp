@@ -1,16 +1,29 @@
 {
   "name": "@nevzatcirak/confluence-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Deployment-agnostic Confluence MCP server (stdio) for Confluence Server / Data Center, with a Cloud adapter seam — compact cards, pagination-aware listings, optimistic-lock-safe writes",
   "type": "module",
   "license": "MIT",
   "author": "Nevzat Cirak",
   "homepage": "https://github.com/nevzatcirak/confluence-mcp#readme",
-  "repository": { "type": "git", "url": "git+https://github.com/nevzatcirak/confluence-mcp.git" },
-  "bugs": { "url": "https://github.com/nevzatcirak/confluence-mcp/issues" },
-  "publishConfig": { "@nevzatcirak:registry": "https://registry.npmjs.org/" },
-  "engines": { "node": ">=20" },
-  "files": ["dist", "README.md", "LICENSE"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nevzatcirak/confluence-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nevzatcirak/confluence-mcp/issues"
+  },
+  "publishConfig": {
+    "@nevzatcirak:registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {

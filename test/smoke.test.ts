@@ -1,8 +1,9 @@
 /**
  * MCP stdio smoke test: spawns the BUILT server (node dist/index.js), speaks
- * JSON-RPC to it over stdio and asserts the Phase 0 contract:
+ * JSON-RPC to it over stdio and asserts the Phase 1 contract:
  *   initialize -> serverInfo.name === "confluence-mcp"
- *   tools/list -> { tools: [] }
+ *   tools/list -> exactly the ten Server/DC read tools (read-only mode too,
+ *                 since every shipped tool is read-only)
  *
  * Requires dist/ to exist. `npm test` guarantees this via the "pretest"
  * script ("npm run build" runs before "vitest run").
@@ -95,6 +96,19 @@ const INIT_PARAMS = {
   clientInfo: { name: "smoke-test", version: "0.0.0" },
 };
 
+const EXPECTED_TOOLS = [
+  "cf_get_labels",
+  "cf_get_page",
+  "cf_get_page_by_title",
+  "cf_get_page_hierarchy",
+  "cf_get_page_history",
+  "cf_get_space",
+  "cf_list_attachments",
+  "cf_list_pages_in_space",
+  "cf_list_spaces",
+  "cf_search_cql",
+];
+
 describe("stdio smoke (built server)", () => {
   it("has a build output to test against", () => {
     expect(existsSync(SERVER_PATH), "dist/index.js missing — run `npm run build` first (npm test does this via pretest)").toBe(true);
@@ -108,11 +122,11 @@ describe("stdio smoke (built server)", () => {
     const init = await session.call("initialize", INIT_PARAMS);
     expect(init.error).toBeUndefined();
     expect(init.result).toMatchObject({
-      serverInfo: { name: "confluence-mcp", version: "0.1.0" },
+      serverInfo: { name: "confluence-mcp", version: "0.2.0" },
     });
   });
 
-  it("returns an empty tools list on tools/list (Phase 0: zero registered tools)", async () => {
+  it("returns exactly the Phase 1 read tools on tools/list", async () => {
     const session = tracked({
       CONFLUENCE_URL: "https://confluence.example.com",
       CONFLUENCE_TOKEN: "smoke-token",
@@ -123,10 +137,11 @@ describe("stdio smoke (built server)", () => {
     session.notify("notifications/initialized", {});
     const list = await session.call("tools/list", {});
     expect(list.error).toBeUndefined();
-    expect(list.result).toMatchObject({ tools: [] });
+    const tools = (list.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort();
+    expect(tools).toEqual(EXPECTED_TOOLS);
   });
 
-  it("still returns an empty tools list in read-only mode", async () => {
+  it("returns the same full list in read-only mode (all shipped tools are read-only)", async () => {
     const session = tracked({
       CONFLUENCE_URL: "https://confluence.example.com",
       CONFLUENCE_TOKEN: "smoke-token",
@@ -134,6 +149,7 @@ describe("stdio smoke (built server)", () => {
     });
     await session.call("initialize", INIT_PARAMS);
     const list = await session.call("tools/list", {});
-    expect(list.result).toMatchObject({ tools: [] });
+    const tools = (list.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort();
+    expect(tools).toEqual(EXPECTED_TOOLS);
   });
 });

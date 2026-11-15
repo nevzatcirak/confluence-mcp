@@ -152,14 +152,34 @@ describe("registerAllTools", () => {
   });
 });
 
-describe("toolManifests (Phase 0)", () => {
-  it("ships an empty manifest so tools/list returns []", () => {
-    expect(toolManifests).toEqual([]);
+describe("toolManifests (Phase 1 read tools)", () => {
+  const EXPECTED_TOOLS = [
+    "cf_get_labels",
+    "cf_get_page",
+    "cf_get_page_by_title",
+    "cf_get_page_hierarchy",
+    "cf_get_page_history",
+    "cf_get_space",
+    "cf_list_attachments",
+    "cf_list_pages_in_space",
+    "cf_list_spaces",
+    "cf_search_cql",
+  ];
+
+  it("ships exactly the ten read tools", () => {
+    expect(toolManifests.map((m) => m.name).sort()).toEqual(EXPECTED_TOOLS);
   });
 
-  it("advertises nothing on any provider, in any mode", () => {
-    expect(selectManifests(toolManifests, "server", false)).toEqual([]);
-    expect(selectManifests(toolManifests, "server", true)).toEqual([]);
+  it("marks every manifest read-only and Server/DC-only", () => {
+    for (const manifest of toolManifests) {
+      expect(manifest.readOnly).toBe(true);
+      expect(manifest.providers).toEqual(["server"]);
+    }
+  });
+
+  it("advertises the full set on the server provider in any mode, nothing on cloud", () => {
+    expect(selectManifests(toolManifests, "server", false)).toHaveLength(10);
+    expect(selectManifests(toolManifests, "server", true)).toHaveLength(10);
     expect(selectManifests(toolManifests, "cloud", false)).toEqual([]);
     expect(selectManifests(toolManifests, "cloud", true)).toEqual([]);
   });
