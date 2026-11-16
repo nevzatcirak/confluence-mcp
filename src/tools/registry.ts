@@ -8,8 +8,9 @@
  * - `readOnly`: under CONFLUENCE_READ_ONLY=true, write tools are also
  *   omitted from the advertised set.
  *
- * Phase 1 ships the Server/DC read tools; their manifests live in the domain
- * modules imported below and are aggregated into `toolManifests`.
+ * Phase 1 ships the Server/DC read tools; Phase 2 adds the Server/DC write
+ * tools. Manifests live in the domain modules imported below and are
+ * aggregated into `toolManifests`.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -21,6 +22,7 @@ import type { ProviderContext, ProviderId } from "../core/provider.js";
 import { pageToolManifests } from "./pageTools.js";
 import { spaceToolManifests } from "./spaceTools.js";
 import { contentToolManifests } from "./contentTools.js";
+import { writeToolManifests } from "./writeTools.js";
 
 export interface ToolCallContext {
   readonly config: ConfluenceConfig;
@@ -46,6 +48,7 @@ export const toolManifests: ToolManifest[] = [
   ...pageToolManifests,
   ...spaceToolManifests,
   ...contentToolManifests,
+  ...writeToolManifests,
 ];
 
 export function selectManifests(

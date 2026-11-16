@@ -93,6 +93,68 @@ representation in the REST conversion graph (`storage → view/export_view`; `ex
 terminal), keeps macro semantics (code language, TOC identity, collapse state) stable across
 Confluence versions, and converts deterministically server-side without theme or render-mode drift.
 
+## Write tools (Phase 2 — Server/DC)
+
+The five write tools declare `readOnly: false` and are served by the `server` provider. Under
+`CONFLUENCE_READ_ONLY=true` they are not advertised at all — `tools/list` returns only the ten
+read tools.
+
+| Tool | Purpose | Key arguments |
+| --- | --- | --- |
+| `cf_create_page` | Create a page in a space | `spaceKey`, `title`, `body`, `bodyFormat` (`markdown` \| `storage`, default `markdown`), `parent` (optional parent page id) |
+| `cf_update_page` | Update title and/or body with mandatory optimistic locking | `id`, `title`?, `body`?, `bodyFormat`, `message`? — at least one of `title`/`body` |
+| `cf_delete_page` | Move a page to the trash | `id` |
+| `cf_add_label` | Add one global label | `id`, `name` |
+| `cf_remove_label` | Remove one label by name | `id`, `name` |
+
+**Deletion is trash-only.** `cf_delete_page` calls `DELETE /rest/api/content/{id}`, which moves
+the page to the Confluence trash. Permanent purge is a separate server-side administration
+operation and is deliberately not exposed by this tool.
+
+**Optimistic locking.** `cf_update_page` always fetches the page's current `version.number`,
+writes `version.number + 1` and, on HTTP 409 (concurrent edit), re-fetches and retries exactly
+once. A second conflict surfaces a structured `CONFLICT` error — there is no second automatic
+retry.
+
+### Markdown input subset (write tools)
+
+`cf_create_page` / `cf_update_page` accept `bodyFormat: "markdown"` (default) and convert the
+body with a dependency-free converter (`src/core/markdown/markdownToStorage.ts`). This is a
+sharply scoped, writer-friendly subset — **not** a full Markdown parser.
+
+Supported on input:
+
+- Headings `#` .. `######`
+- Paragraphs (blank-line separated); a newline inside a paragraph becomes a hard break (`<br/>`)
+- Unordered lists (`-` / `*`) and ordered lists (`1.`) — exactly one nesting level
+- Fenced code blocks (```` ```lang ````) → code macro with language parameter and a verbatim body
+- Inline: `**bold**`, `*italic*`, `` `code` ``, `[text](url)` with http, https and relative URLs
+  (`/…`, `./…`, `../…`, `#…`)
+
+Anything else is rejected with a structured `VALIDATION` error naming the offending construct —
+input is never silently converted, approximated or dropped. Explicitly unsupported on input:
+tables, images, blockquotes, task lists, HTML passthrough, list nesting deeper than one level,
+horizontal rules, strikethrough, footnotes, reference-style links, autolinks, mixed ordered and
+unordered markers inside one list, and indented continuation lines below a list item. For richer
+bodies (macros, tables, panels, …) pass `bodyFormat: "storage"` and author Confluence storage
+XHTML directly.
+
+### Round-trip fidelity (markdown → storage → markdown)
+
+A page written via the markdown subset reads back through `cf_get_page` with the supported
+subset intact (headings, one-level lists, bold/italic/inline code, code fence incl. language,
+links). Known losses of the cycle:
+
+- Paragraph line breaks normalize to hard breaks (`  \n`), and runs of internal whitespace
+  collapse to single spaces.
+- Nested lists beyond one level are rejected on input, so they are never produced either.
+- Tables, images, task lists, blockquotes and strikethrough are not in the input subset; pages
+  containing them read fine (`cf_get_page` handles them) but cannot be authored via markdown.
+- Code fences keep their language, but other code-macro parameters (`collapse`, `linenumbers`,
+  `title`, …) are not expressible from markdown input.
+- Storage-only constructs (status/panel/expand/toc macros, `ac:link` page references, emoticons)
+  cannot be produced from markdown input; reading them back renders their markdown approximations.
+
 ## Usage
 
 ```sh
@@ -111,11 +173,14 @@ npm test           # pretest builds, then vitest (unit + stdio smoke test)
 npm run check:org  # guard: forbidden references, public-registry lockfile, .npmrc pin
 ```
 
-## Status: Phase 1
+## Status: Phase 2
 
 - ✅ **Phase 0** — core (config, pagination, compact cards, optimistic lock, errors), server
   provider, cloud seam, manifest registry, check-org guard, CI.
 - ✅ **Phase 1** — 10 read tools (content, spaces, CQL search, labels, attachments) +
   storage→Markdown conversion layer (pure functions, fixture-tested per macro).
-- 🚧 **Phase 2+** — write tools (create/update page with optimistic locking), attachments.
+- ✅ **Phase 2** — 5 write tools (create/update page with mandatory optimistic locking, trash-only
+  delete, label add/remove) + Markdown→storage conversion layer (strict supported subset,
+  VALIDATION on anything else).
+- 🚧 **Phase 3+** — attachments and further write coverage.
 - 🚧 **Phase 4** — Confluence Cloud v2 adapter (replaces the `PROVIDER_UNAVAILABLE` seam).

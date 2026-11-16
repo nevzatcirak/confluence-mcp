@@ -1,9 +1,10 @@
 /**
  * MCP stdio smoke test: spawns the BUILT server (node dist/index.js), speaks
- * JSON-RPC to it over stdio and asserts the Phase 1 contract:
+ * JSON-RPC to it over stdio and asserts the Phase 1+2 contract:
  *   initialize -> serverInfo.name === "confluence-mcp"
- *   tools/list -> exactly the ten Server/DC read tools (read-only mode too,
- *                 since every shipped tool is read-only)
+ *   tools/list -> exactly the ten Server/DC read tools + five write tools;
+ *                 in read-only mode ONLY the ten read tools are advertised
+ *                 (the registry's readOnly filtering hides the write tools)
  *
  * Requires dist/ to exist. `npm test` guarantees this via the "pretest"
  * script ("npm run build" runs before "vitest run").
@@ -96,7 +97,7 @@ const INIT_PARAMS = {
   clientInfo: { name: "smoke-test", version: "0.0.0" },
 };
 
-const EXPECTED_TOOLS = [
+const EXPECTED_READ_TOOLS = [
   "cf_get_labels",
   "cf_get_page",
   "cf_get_page_by_title",
@@ -108,6 +109,16 @@ const EXPECTED_TOOLS = [
   "cf_list_spaces",
   "cf_search_cql",
 ];
+
+const EXPECTED_WRITE_TOOLS = [
+  "cf_add_label",
+  "cf_create_page",
+  "cf_delete_page",
+  "cf_remove_label",
+  "cf_update_page",
+];
+
+const EXPECTED_ALL_TOOLS = [...EXPECTED_READ_TOOLS, ...EXPECTED_WRITE_TOOLS].sort();
 
 describe("stdio smoke (built server)", () => {
   it("has a build output to test against", () => {
@@ -122,11 +133,11 @@ describe("stdio smoke (built server)", () => {
     const init = await session.call("initialize", INIT_PARAMS);
     expect(init.error).toBeUndefined();
     expect(init.result).toMatchObject({
-      serverInfo: { name: "confluence-mcp", version: "0.2.0" },
+      serverInfo: { name: "confluence-mcp", version: "0.3.0" },
     });
   });
 
-  it("returns exactly the Phase 1 read tools on tools/list", async () => {
+  it("returns exactly the Phase 1 read + Phase 2 write tools on tools/list", async () => {
     const session = tracked({
       CONFLUENCE_URL: "https://confluence.example.com",
       CONFLUENCE_TOKEN: "smoke-token",
@@ -138,10 +149,10 @@ describe("stdio smoke (built server)", () => {
     const list = await session.call("tools/list", {});
     expect(list.error).toBeUndefined();
     const tools = (list.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort();
-    expect(tools).toEqual(EXPECTED_TOOLS);
+    expect(tools).toEqual(EXPECTED_ALL_TOOLS);
   });
 
-  it("returns the same full list in read-only mode (all shipped tools are read-only)", async () => {
+  it("hides the five write tools in read-only mode (only the ten read tools remain)", async () => {
     const session = tracked({
       CONFLUENCE_URL: "https://confluence.example.com",
       CONFLUENCE_TOKEN: "smoke-token",
@@ -150,6 +161,7 @@ describe("stdio smoke (built server)", () => {
     await session.call("initialize", INIT_PARAMS);
     const list = await session.call("tools/list", {});
     const tools = (list.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort();
-    expect(tools).toEqual(EXPECTED_TOOLS);
+    expect(tools).toEqual(EXPECTED_READ_TOOLS);
+    expect(tools).toEqual(EXPECTED_ALL_TOOLS.filter((name) => !EXPECTED_WRITE_TOOLS.includes(name)));
   });
 });

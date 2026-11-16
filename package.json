@@ -1,6 +1,6 @@
 {
   "name": "@nevzatcirak/confluence-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Deployment-agnostic Confluence MCP server (stdio) for Confluence Server / Data Center, with a Cloud adapter seam — compact cards, pagination-aware listings, optimistic-lock-safe writes",
   "type": "module",
   "license": "MIT",

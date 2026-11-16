@@ -152,8 +152,8 @@ describe("registerAllTools", () => {
   });
 });
 
-describe("toolManifests (Phase 1 read tools)", () => {
-  const EXPECTED_TOOLS = [
+describe("toolManifests (Phase 1 read + Phase 2 write tools)", () => {
+  const EXPECTED_READ_TOOLS = [
     "cf_get_labels",
     "cf_get_page",
     "cf_get_page_by_title",
@@ -166,20 +166,32 @@ describe("toolManifests (Phase 1 read tools)", () => {
     "cf_search_cql",
   ];
 
+  const EXPECTED_WRITE_TOOLS = [
+    "cf_add_label",
+    "cf_create_page",
+    "cf_delete_page",
+    "cf_remove_label",
+    "cf_update_page",
+  ];
+
   it("ships exactly the ten read tools", () => {
-    expect(toolManifests.map((m) => m.name).sort()).toEqual(EXPECTED_TOOLS);
+    expect(toolManifests.filter((m) => m.readOnly).map((m) => m.name).sort()).toEqual(EXPECTED_READ_TOOLS);
   });
 
-  it("marks every manifest read-only and Server/DC-only", () => {
+  it("ships exactly the five write tools", () => {
+    expect(toolManifests.filter((m) => !m.readOnly).map((m) => m.name).sort()).toEqual(EXPECTED_WRITE_TOOLS);
+  });
+
+  it("marks every tool Server/DC-only and every read tool read-only", () => {
     for (const manifest of toolManifests) {
-      expect(manifest.readOnly).toBe(true);
       expect(manifest.providers).toEqual(["server"]);
+      expect(manifest.readOnly).toBe(EXPECTED_READ_TOOLS.includes(manifest.name));
     }
   });
 
-  it("advertises the full set on the server provider in any mode, nothing on cloud", () => {
-    expect(selectManifests(toolManifests, "server", false)).toHaveLength(10);
-    expect(selectManifests(toolManifests, "server", true)).toHaveLength(10);
+  it("advertises 15 tools on server in normal mode, only the 10 read tools in read-only mode, nothing on cloud", () => {
+    expect(selectManifests(toolManifests, "server", false)).toHaveLength(15);
+    expect(selectManifests(toolManifests, "server", true).map((m) => m.name).sort()).toEqual(EXPECTED_READ_TOOLS);
     expect(selectManifests(toolManifests, "cloud", false)).toEqual([]);
     expect(selectManifests(toolManifests, "cloud", true)).toEqual([]);
   });
