@@ -87,4 +87,13 @@ describe("decodeEntities", () => {
   it("decodes hex and decimal character references", () => {
     expect(decodeEntities("&#65;&#x42;")).toBe("AB");
   });
+
+  it("decodes the HTML4 named entities Confluence emits in storage bodies", () => {
+    expect(decodeEntities("&mdash;&ndash;&rarr;&larr;&hellip;")).toBe("\u2014\u2013\u2192\u2190\u2026");
+    expect(decodeEntities("&ldquo;q&rdquo;&rsquo;s&bull;&euro;")).toBe("\u201cq\u201d\u2019s\u2022\u20ac");
+  });
+
+  it("leaves unknown named entities as literal text", () => {
+    expect(decodeEntities("&notarealentity;")).toBe("&notarealentity;");
+  });
 });

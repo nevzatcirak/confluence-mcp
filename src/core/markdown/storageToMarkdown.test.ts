@@ -339,6 +339,12 @@ describe("standard HTML subset", () => {
   it("renders <blockquote> with > prefix", () => {
     expect(storageToMarkdown("<blockquote><p>quoted</p></blockquote>")).toBe("> quoted");
   });
+
+  it("decodes the named entities Confluence normalizes non-ASCII characters into", () => {
+    // Observed on a live Cloud tenant: create with literal U+2014/U+2192, the
+    // returned storage body carries &mdash; / &rarr; instead.
+    expect(storageToMarkdown("<p>Dash &mdash; arrow &rarr; end</p>")).toBe("Dash \u2014 arrow \u2192 end");
+  });
 });
 
 describe("storage-format edge cases", () => {

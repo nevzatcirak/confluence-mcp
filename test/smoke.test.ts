@@ -134,7 +134,7 @@ describe("stdio smoke (built server)", () => {
     const init = await session.call("initialize", INIT_PARAMS);
     expect(init.error).toBeUndefined();
     expect(init.result).toMatchObject({
-      serverInfo: { name: "confluence-mcp", version: "0.4.0" },
+      serverInfo: { name: "confluence-mcp", version: "0.4.1" },
     });
   });
 
