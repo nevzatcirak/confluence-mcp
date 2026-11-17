@@ -18,6 +18,16 @@ Core features carried over from the shared MCP core design:
 - **Optimistic-lock-safe writes** — Confluence pages carry a `version`; on HTTP 409 the current
   page is re-fetched and the write is retried exactly once.
 
+## Atlassian MCP Suite
+
+| Package | Scope |
+|---|---|
+| [@nevzatcirak/jira-mcp](https://www.npmjs.com/package/@nevzatcirak/jira-mcp) | Jira issues, boards, sprints, worklogs |
+| [@nevzatcirak/bitbucket-mcp](https://www.npmjs.com/package/@nevzatcirak/bitbucket-mcp) | Bitbucket Server/DC + Cloud: PRs, reviews, branches, code search |
+| [@nevzatcirak/confluence-mcp](https://www.npmjs.com/package/@nevzatcirak/confluence-mcp) | Confluence Server/DC + Cloud: pages, CQL search, labels, markdown round-trip |
+
+Install the other two depending on the client you use: `npx @nevzatcirak/jira-mcp` · `npx @nevzatcirak/bitbucket-mcp`
+
 ## Configuration (environment)
 
 | Variable | Meaning |
