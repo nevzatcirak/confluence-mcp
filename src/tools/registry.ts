@@ -9,8 +9,9 @@
  *   omitted from the advertised set.
  *
  * Phase 1 ships the Server/DC read tools; Phase 2 adds the Server/DC write
- * tools. Manifests live in the domain modules imported below and are
- * aggregated into `toolManifests`.
+ * tools; Phase 4 adds the Cloud implementations (both providers behind the
+ * same manifests, dispatched by ctx.provider.id). Manifests live in the
+ * domain modules imported below and are aggregated into `toolManifests`.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -79,7 +80,7 @@ export function registerAllTools(
         if (!ctx.provider.available) {
           return mcpError(
             ERROR_CODES.PROVIDER_UNAVAILABLE,
-            `The "${ctx.provider.id}" provider adapter is not implemented yet — Cloud v2 API arrives in Phase 4.`,
+            `The "${ctx.provider.id}" provider is not available.`,
             { provider: ctx.provider.id, tool: manifest.name },
           );
         }

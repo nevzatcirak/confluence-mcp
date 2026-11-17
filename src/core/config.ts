@@ -10,11 +10,15 @@ export interface ConfluenceConfig {
   /** Base URL, trailing slash stripped. Undefined when missing/invalid. */
   url?: string;
   provider: ProviderId;
-  /** Personal access token -> Authorization: Bearer. */
+  /** Personal access token -> Authorization: Bearer. Server primary; Cloud secondary (OAuth). */
   token?: string;
   username?: string;
-  /** Used with username for `Authorization: Basic base64(user:pass)`. */
+  /** Used with username for `Authorization: Basic base64(user:pass)`. Server/DC only. */
   password?: string;
+  /** Atlassian account email; with cloudApiToken -> `Authorization: Basic base64(email:token)`. Cloud primary. */
+  cloudEmail?: string;
+  /** Confluence Cloud API token; only valid together with cloudEmail. Cloud primary. */
+  cloudApiToken?: string;
   readOnly: boolean;
   customHeaders: Record<string, string>;
 }
@@ -37,17 +41,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LoadedConfig {
 
   const provider = parseProvider(env.CONFLUENCE_PROVIDER, problems);
   const url = normalizeUrl(env.CONFLUENCE_URL, problems);
-  const token = optional(env.CONFLUENCE_TOKEN);
-  const username = optional(env.CONFLUENCE_USERNAME);
-  const password = optional(env.CONFLUENCE_PASSWORD);
-
-  if (!token && !(username && password)) {
-    problems.push({
-      field: "CONFLUENCE_TOKEN",
-      message: "Either CONFLUENCE_TOKEN or both CONFLUENCE_USERNAME and CONFLUENCE_PASSWORD must be set.",
-      hint: "Personal access token (Bearer) or credentials (Basic).",
-    });
-  }
+  const credentials = {
+    token: optional(env.CONFLUENCE_TOKEN),
+    username: optional(env.CONFLUENCE_USERNAME),
+    password: optional(env.CONFLUENCE_PASSWORD),
+    cloudEmail: optional(env.CONFLUENCE_CLOUD_EMAIL),
+    cloudApiToken: optional(env.CONFLUENCE_CLOUD_API_TOKEN),
+  };
+  problems.push(...credentialProblems(provider, credentials));
 
   const { headers, problems: headerProblems } = parseCustomHeaders(env.CONFLUENCE_CUSTOM_HEADERS);
   problems.push(...headerProblems);
@@ -56,14 +57,84 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LoadedConfig {
     config: {
       url: url ?? undefined,
       provider,
-      token: token ?? undefined,
-      username: username ?? undefined,
-      password: password ?? undefined,
+      token: credentials.token ?? undefined,
+      username: credentials.username ?? undefined,
+      password: credentials.password ?? undefined,
+      cloudEmail: credentials.cloudEmail ?? undefined,
+      cloudApiToken: credentials.cloudApiToken ?? undefined,
       readOnly: isTruthy(env.CONFLUENCE_READ_ONLY),
       customHeaders: headers,
     },
     problems,
   };
+}
+
+/**
+ * Provider-conditional credential validation, shared by loadConfig and
+ * requireCompleteConfig.
+ *
+ * - Server/DC: either CONFLUENCE_TOKEN (Bearer) or the CONFLUENCE_USERNAME +
+ *   CONFLUENCE_PASSWORD pair (Basic).
+ * - Cloud: EXACTLY ONE of { CONFLUENCE_CLOUD_EMAIL + CONFLUENCE_CLOUD_API_TOKEN
+ *   pair (Basic), CONFLUENCE_TOKEN (Bearer OAuth) }. One half of the pair
+ *   alone is a problem, both credential sets together are a problem, and the
+ *   Server/DC username/password pair is rejected as server-only.
+ */
+function credentialProblems(
+  provider: ProviderId,
+  creds: {
+    token: string | null;
+    username: string | null;
+    password: string | null;
+    cloudEmail: string | null;
+    cloudApiToken: string | null;
+  },
+): ConfigProblem[] {
+  const problems: ConfigProblem[] = [];
+  const cloudPairSet = Boolean(creds.cloudEmail || creds.cloudApiToken);
+  const cloudPairComplete = Boolean(creds.cloudEmail && creds.cloudApiToken);
+  const serverBasicComplete = Boolean(creds.username && creds.password);
+
+  if (provider === "cloud") {
+    if (creds.username || creds.password) {
+      problems.push({
+        field: "CONFLUENCE_USERNAME",
+        message:
+          "CONFLUENCE_USERNAME and CONFLUENCE_PASSWORD are Server/DC-only credentials. " +
+          "On Cloud, use CONFLUENCE_CLOUD_EMAIL + CONFLUENCE_CLOUD_API_TOKEN (Basic) or CONFLUENCE_TOKEN (Bearer).",
+      });
+    }
+    if (cloudPairSet && creds.token) {
+      problems.push({
+        field: "CONFLUENCE_TOKEN",
+        message:
+          "Set exactly one Cloud credential: either CONFLUENCE_CLOUD_EMAIL + CONFLUENCE_CLOUD_API_TOKEN " +
+          "or CONFLUENCE_TOKEN — not both.",
+      });
+    } else if (cloudPairSet && !cloudPairComplete) {
+      problems.push({
+        field: creds.cloudEmail ? "CONFLUENCE_CLOUD_API_TOKEN" : "CONFLUENCE_CLOUD_EMAIL",
+        message: "CONFLUENCE_CLOUD_EMAIL and CONFLUENCE_CLOUD_API_TOKEN must be set together.",
+        hint: "Cloud API-token Basic auth needs both the account email and the API token.",
+      });
+    } else if (!cloudPairSet && !creds.token) {
+      problems.push({
+        field: "CONFLUENCE_TOKEN",
+        message: "Cloud requires CONFLUENCE_CLOUD_EMAIL + CONFLUENCE_CLOUD_API_TOKEN or CONFLUENCE_TOKEN.",
+        hint: "API-token Basic auth (email + token) or an OAuth access token (Bearer).",
+      });
+    }
+    return problems;
+  }
+
+  if (!creds.token && !serverBasicComplete) {
+    problems.push({
+      field: "CONFLUENCE_TOKEN",
+      message: "Either CONFLUENCE_TOKEN or both CONFLUENCE_USERNAME and CONFLUENCE_PASSWORD must be set.",
+      hint: "Personal access token (Bearer) or credentials (Basic).",
+    });
+  }
+  return problems;
 }
 
 /**
@@ -79,17 +150,23 @@ export function requireCompleteConfig(config: ConfluenceConfig): ConfigProblem[]
       hint: "e.g. https://confluence.example.com",
     });
   }
-  if (!config.token && !(config.username && config.password)) {
-    problems.push({
-      field: "CONFLUENCE_TOKEN",
-      message: "Either CONFLUENCE_TOKEN or both CONFLUENCE_USERNAME and CONFLUENCE_PASSWORD must be set.",
-    });
-  }
+  problems.push(
+    ...credentialProblems(config.provider, {
+      token: config.token ?? null,
+      username: config.username ?? null,
+      password: config.password ?? null,
+      cloudEmail: config.cloudEmail ?? null,
+      cloudApiToken: config.cloudApiToken ?? null,
+    }),
+  );
   return problems;
 }
 
-/** True when the config carries at least one complete credential set. */
+/** True when the config carries at least one complete credential set for its provider. */
 export function hasAuth(config: ConfluenceConfig): boolean {
+  if (config.provider === "cloud") {
+    return Boolean(config.token || (config.cloudEmail && config.cloudApiToken));
+  }
   return Boolean(config.token || (config.username && config.password));
 }
 

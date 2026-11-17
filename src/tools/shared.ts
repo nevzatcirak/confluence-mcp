@@ -11,16 +11,32 @@
 import { z } from "zod";
 import { ERROR_CODES, ToolError } from "../core/errors.js";
 import { asRecord, asString } from "../core/json.js";
+import { markdownToStorage } from "../core/markdown/markdownToStorage.js";
 import { DEFAULT_PAGE_LIMIT, extractPageItems, pageMeta, pageQuery } from "../core/pagination.js";
 import type { PageMeta } from "../core/pagination.js";
 import { SERVER_PAGINATION } from "../core/provider.js";
-import type { ToolArgs, ToolCallContext } from "./registry.js";
+import type { ToolArgs, ToolCallContext, ToolManifest } from "./registry.js";
 
 /** Shared `start` argument for numbered (Server/DC) pagination. */
 export const startSchema = z.number().int().min(0).default(0);
 
 /** Shared `limit` argument: page size, clamped to the read-tool cap of 100. */
 export const limitSchema = z.number().int().min(1).max(100).default(DEFAULT_PAGE_LIMIT);
+
+/**
+ * Shared `cursor` argument for cursor-paginated (Cloud) listings. Server/DC
+ * ignores it; Cloud tools pass it back verbatim as the `?cursor=` query
+ * parameter (it comes from PageMeta.nextCursor and is never synthesized).
+ */
+export const cursorSchema = z.string().trim().min(1).optional();
+
+/** Body formats accepted by the write tools (read tools additionally accept "view"). */
+export type WriteBodyFormat = "markdown" | "storage";
+
+/** Convert the caller's body to storage XHTML: markdown converts, storage passes through. */
+export function resolveWriteBodyStorage(body: string, bodyFormat: WriteBodyFormat): string {
+  return bodyFormat === "storage" ? body : markdownToStorage(body);
+}
 
 /**
  * Parse and validate tool arguments against a manifest's schema. The MCP SDK
@@ -38,6 +54,28 @@ export function parseToolArgs<S extends z.ZodTypeAny>(schema: S, args: ToolArgs,
     throw new ToolError(ERROR_CODES.VALIDATION, `Invalid arguments for ${toolName}.`, issues);
   }
   return result.data;
+}
+
+/** One provider's implementation of a tool: parsed (validated) args in, card out. */
+export type ProviderImpl<S extends z.ZodTypeAny> = (
+  ctx: ToolCallContext,
+  args: z.infer<S>,
+) => Promise<unknown>;
+
+/**
+ * Wire a tool manifest's handler to the active provider: validate the
+ * arguments once against the manifest's schema, then route to the Server/DC
+ * or Cloud implementation based on ctx.provider.id.
+ */
+export function dispatchByProvider<S extends z.ZodTypeAny>(
+  schema: S,
+  toolName: string,
+  impls: { server: ProviderImpl<S>; cloud: ProviderImpl<S> },
+): ToolManifest["handler"] {
+  return async (args, ctx) => {
+    const parsed = parseToolArgs(schema, args, toolName);
+    return ctx.provider.id === "cloud" ? impls.cloud(ctx, parsed) : impls.server(ctx, parsed);
+  };
 }
 
 /** Server/DC query parameters (`limit`/`start`) for a numbered page request. */

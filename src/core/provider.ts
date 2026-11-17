@@ -1,10 +1,8 @@
 /**
- * Provider seam: the server supports Confluence Server / Data Center today and
- * keeps a ready (unimplemented) adapter slot for Confluence Cloud.
- *
- * Every tool manifest declares which providers it supports; tools whose
- * manifest does not list the active provider are never advertised to the
- * MCP client.
+ * Provider seam: the server supports Confluence Server / Data Center and
+ * Confluence Cloud. Both adapters are fully implemented; every tool manifest
+ * declares which providers it supports, and tools whose manifest does not
+ * list the active provider are never advertised to the MCP client.
  */
 
 import type { RestClient } from "./restClient.js";
@@ -18,9 +16,8 @@ export type PageMode = "number" | "cursor";
  * How a provider expresses pagination as query parameters.
  * - Server/DC: `?limit=25&start=0` (zero-based offset, pageMode "number").
  *   Envelopes carry `size` plus a `_links.next` path when more pages exist.
- * - Cloud v2: `?limit=25` with cursor-style follow-up via the `_links.next`
- *   URL in the response (pageMode "cursor" — seam ready, implementation in
- *   Phase 4).
+ * - Cloud: `?limit=25` with cursor-style follow-up via the `cursor` token
+ *   extracted from the `_links.next` URL (pageMode "cursor").
  */
 export interface PaginationStyle {
   readonly limitParam: string;
@@ -54,9 +51,10 @@ export const CLOUD_PAGINATION: PaginationStyle = {
 export interface ProviderContext {
   readonly id: ProviderId;
   /**
-   * False when the adapter exists as a seam but is not implemented yet
-   * (Cloud, as of Phase 0). Calls against an unavailable provider return a
-   * structured PROVIDER_UNAVAILABLE error instead of crashing.
+   * False when the provider context is not usable (defensive gate — both
+   * built-in providers construct themselves as available). Calls against an
+   * unavailable provider return a structured PROVIDER_UNAVAILABLE error
+   * instead of crashing.
    */
   readonly available: boolean;
   readonly client: RestClient;

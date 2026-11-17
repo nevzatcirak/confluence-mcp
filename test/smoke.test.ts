@@ -1,10 +1,11 @@
 /**
  * MCP stdio smoke test: spawns the BUILT server (node dist/index.js), speaks
- * JSON-RPC to it over stdio and asserts the Phase 1+2 contract:
+ * JSON-RPC to it over stdio and asserts the contract:
  *   initialize -> serverInfo.name === "confluence-mcp"
- *   tools/list -> exactly the ten Server/DC read tools + five write tools;
- *                 in read-only mode ONLY the ten read tools are advertised
- *                 (the registry's readOnly filtering hides the write tools)
+ *   tools/list -> exactly the ten read tools + five write tools, on both the
+ *                 server and the cloud provider (the registry works without
+ *                 any network access); in read-only mode ONLY the ten read
+ *                 tools are advertised.
  *
  * Requires dist/ to exist. `npm test` guarantees this via the "pretest"
  * script ("npm run build" runs before "vitest run").
@@ -133,7 +134,7 @@ describe("stdio smoke (built server)", () => {
     const init = await session.call("initialize", INIT_PARAMS);
     expect(init.error).toBeUndefined();
     expect(init.result).toMatchObject({
-      serverInfo: { name: "confluence-mcp", version: "0.3.0" },
+      serverInfo: { name: "confluence-mcp", version: "0.4.0" },
     });
   });
 
@@ -163,5 +164,22 @@ describe("stdio smoke (built server)", () => {
     const tools = (list.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort();
     expect(tools).toEqual(EXPECTED_READ_TOOLS);
     expect(tools).toEqual(EXPECTED_ALL_TOOLS.filter((name) => !EXPECTED_WRITE_TOOLS.includes(name)));
+  });
+
+  it("advertises the same 15 tools with provider=cloud (registry works without network)", async () => {
+    const session = tracked({
+      CONFLUENCE_URL: "https://confluence.example.com",
+      CONFLUENCE_PROVIDER: "cloud",
+      CONFLUENCE_CLOUD_EMAIL: "dev@example.com",
+      CONFLUENCE_CLOUD_API_TOKEN: "smoke-token",
+    });
+    const init = await session.call("initialize", INIT_PARAMS);
+    expect(init.error).toBeUndefined();
+
+    session.notify("notifications/initialized", {});
+    const list = await session.call("tools/list", {});
+    expect(list.error).toBeUndefined();
+    const tools = (list.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort();
+    expect(tools).toEqual(EXPECTED_ALL_TOOLS);
   });
 });

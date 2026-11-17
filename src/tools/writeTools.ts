@@ -1,17 +1,23 @@
 /**
- * Write tools for Confluence Server / Data Center (Phase 2):
- * - cf_create_page   POST   /rest/api/content
- * - cf_update_page   PUT    /rest/api/content/{id}   (mandatory optimistic lock)
- * - cf_delete_page   DELETE /rest/api/content/{id}   (moves to trash only)
- * - cf_add_label     POST   /rest/api/content/{id}/label
- * - cf_remove_label  DELETE /rest/api/content/{id}/label?name=
+ * Write tools (Server/DC + Cloud):
+ * - cf_create_page   POST   Server /rest/api/content | Cloud /api/v2/pages
+ * - cf_update_page   PUT    Server /rest/api/content/{id} | Cloud /api/v2/pages/{id}
+ *                           (mandatory optimistic lock on both providers)
+ * - cf_delete_page   DELETE Server /rest/api/content/{id} | Cloud /api/v2/pages/{id} (trash only)
+ * - cf_add_label     POST   /rest/api/content/{id}/label (both providers — the
+ *                           Cloud v2 label group is read-only, so writes are v1)
+ * - cf_remove_label  DELETE /rest/api/content/{id}/label?name= (both providers)
  *
- * All write manifests declare `providers: ["server"]` and `readOnly: false`,
- * so the registry hides them under CONFLUENCE_READ_ONLY=true and on the
- * (unimplemented) cloud provider. Bodies default to Markdown and are
- * converted with markdownToStorage (src/core/markdown) — anything outside the
- * supported subset is rejected with a structured VALIDATION error;
- * bodyFormat "storage" passes the caller's XHTML through verbatim.
+ * All write manifests declare `readOnly: false`; under CONFLUENCE_READ_ONLY=true
+ * they are not advertised at all. Bodies default to Markdown and are converted
+ * with markdownToStorage (src/core/markdown) — anything outside the supported
+ * subset is rejected with a structured VALIDATION error; bodyFormat "storage"
+ * passes the caller's XHTML through verbatim.
+ *
+ * Optimistic locking: cf_update_page always carries the current version number
+ * + 1 (Cloud v2 REQUIRES the current version in the PUT payload); on HTTP 409
+ * the page is re-fetched and the write retried exactly once — a second 409
+ * surfaces a structured CONFLICT error.
  *
  * cf_delete_page only moves a page to the Confluence trash; permanent purge
  * is a separate server-side operation and is intentionally not exposed here.
@@ -20,17 +26,22 @@
 import { z } from "zod";
 import { ERROR_CODES, ToolError } from "../core/errors.js";
 import { asNumber, asRecord, asString, getPath } from "../core/json.js";
-import { markdownToStorage } from "../core/markdown/markdownToStorage.js";
 import { withOptimisticLock, versionNumberOf } from "../core/optimisticLock.js";
 import { SERVER_API_PREFIX } from "../providers/server/serverProvider.js";
-import { extractPageItems, parseToolArgs, resolveLink } from "./shared.js";
+import {
+  cloudAddLabel,
+  cloudCreatePage,
+  cloudDeletePage,
+  cloudRemoveLabel,
+  cloudUpdatePage,
+} from "../providers/cloud/cloudTools.js";
+import {
+  dispatchByProvider,
+  extractPageItems,
+  resolveLink,
+  resolveWriteBodyStorage,
+} from "./shared.js";
 import type { ToolCallContext, ToolManifest } from "./registry.js";
-
-/** Body formats accepted by the write tools (read tools additionally accept "view"). */
-const WRITE_BODY_FORMATS = ["markdown", "storage"] as const;
-export type WriteBodyFormat = (typeof WRITE_BODY_FORMATS)[number];
-
-const bodyFormatSchema = z.enum(WRITE_BODY_FORMATS).default("markdown");
 
 const idSchema = z.string().trim().min(1, "id is required");
 
@@ -38,7 +49,7 @@ const createPageSchema = z.object({
   spaceKey: z.string().trim().min(1, "spaceKey is required"),
   title: z.string().trim().min(1, "title is required"),
   body: z.string().min(1, "body is required"),
-  bodyFormat: bodyFormatSchema,
+  bodyFormat: z.enum(["markdown", "storage"]).default("markdown"),
   parent: z.string().trim().min(1).optional(),
 });
 
@@ -46,7 +57,7 @@ const updatePageArgs = z.object({
   id: z.string().trim().min(1, "id is required"),
   title: z.string().trim().min(1).optional(),
   body: z.string().min(1).optional(),
-  bodyFormat: bodyFormatSchema,
+  bodyFormat: z.enum(["markdown", "storage"]).default("markdown"),
   message: z.string().trim().optional(),
 });
 
@@ -62,17 +73,12 @@ const labelNameSchema = z.object({
   name: z.string().trim().min(1, "name is required"),
 });
 
-/** Convert the caller's body to storage XHTML: markdown converts, storage passes through. */
-function resolveBodyStorage(body: string, bodyFormat: WriteBodyFormat): string {
-  return bodyFormat === "storage" ? body : markdownToStorage(body);
-}
-
 /** Page title of a fetched payload, for update requests that only change the body. */
 function titleOf(payload: unknown): string {
   return asString(asRecord(payload)?.title) ?? "";
 }
 
-/** Compact page card for write results: id, title, web URL, version and space. */
+/** Compact page card for Server write results: id, title, web URL, version and space. */
 function pageWriteCard(
   ctx: ToolCallContext,
   payload: unknown,
@@ -120,7 +126,75 @@ async function fetchLabels(ctx: ToolCallContext, id: string): Promise<Array<Reco
   });
 }
 
-/** Phase 2 write tools for the Server/DC provider. */
+// --- Server/DC implementations -------------------------------------------------
+
+async function serverCreatePage(ctx: ToolCallContext, args: z.infer<typeof createPageSchema>): Promise<unknown> {
+  const payload: Record<string, unknown> = {
+    type: "page",
+    title: args.title,
+    space: { key: args.spaceKey },
+    body: { storage: { value: resolveWriteBodyStorage(args.body, args.bodyFormat), representation: "storage" } },
+  };
+  if (args.parent !== undefined) payload.ancestors = [{ id: args.parent }];
+
+  const page = await ctx.provider.client.post(`${SERVER_API_PREFIX}/content`, { body: payload });
+  return pageWriteCard(ctx, page, { title: args.title, spaceKey: args.spaceKey });
+}
+
+async function serverUpdatePage(ctx: ToolCallContext, args: z.infer<typeof updatePageSchema>): Promise<unknown> {
+  const storageBody = args.body === undefined ? undefined : resolveWriteBodyStorage(args.body, args.bodyFormat);
+
+  const updated = await withOptimisticLock({
+    fetchCurrent: () => fetchPageVersion(ctx, args.id),
+    apply: async (current) => {
+      const version: Record<string, unknown> = { number: current.version + 1 };
+      if (args.message !== undefined) version.message = args.message;
+
+      const payload: Record<string, unknown> = {
+        id: args.id,
+        type: "page",
+        version,
+        title: args.title ?? titleOf(current.page),
+      };
+      if (storageBody !== undefined) {
+        payload.body = { storage: { value: storageBody, representation: "storage" } };
+      }
+      return ctx.provider.client.put(`${SERVER_API_PREFIX}/content/${encodeURIComponent(args.id)}`, { body: payload });
+    },
+  });
+
+  return pageWriteCard(ctx, updated);
+}
+
+async function serverDeletePage(ctx: ToolCallContext, args: z.infer<typeof pageIdSchema>): Promise<unknown> {
+  await ctx.provider.client.delete(`${SERVER_API_PREFIX}/content/${encodeURIComponent(args.id)}`);
+  return {
+    id: args.id,
+    status: "trashed",
+    trashed: true,
+    note:
+      "The page was moved to the Confluence trash. Permanent purge is a separate server-side " +
+      "operation and is not performed by this tool.",
+  };
+}
+
+async function serverAddLabel(ctx: ToolCallContext, args: z.infer<typeof labelNameSchema>): Promise<unknown> {
+  await ctx.provider.client.post(`${SERVER_API_PREFIX}/content/${encodeURIComponent(args.id)}/label`, {
+    body: [{ prefix: "global", name: args.name }],
+  });
+  const labels = await fetchLabels(ctx, args.id);
+  return { id: args.id, added: args.name, size: labels.length, labels };
+}
+
+async function serverRemoveLabel(ctx: ToolCallContext, args: z.infer<typeof labelNameSchema>): Promise<unknown> {
+  await ctx.provider.client.delete(`${SERVER_API_PREFIX}/content/${encodeURIComponent(args.id)}/label`, {
+    query: { name: args.name },
+  });
+  const labels = await fetchLabels(ctx, args.id);
+  return { id: args.id, removed: args.name, size: labels.length, labels };
+}
+
+/** Write tools, served on both the Server/DC and Cloud providers. */
 export const writeToolManifests: ToolManifest[] = [
   {
     name: "cf_create_page",
@@ -131,7 +205,7 @@ export const writeToolManifests: ToolManifest[] = [
       "subset (headings, paragraphs, one-level lists, fenced code, bold/italic/inline code, links); " +
       "unsupported Markdown is rejected with VALIDATION — pass bodyFormat \"storage\" to author raw " +
       "Confluence storage XHTML instead. An optional parent page id nests the new page under that " +
-      "ancestor. Confluence Server / Data Center only.",
+      "parent (Server: ancestors[]; Cloud: parentId, resolved from the space key first).",
     inputSchema: {
       spaceKey: createPageSchema.shape.spaceKey.describe("Space key to create the page in, e.g. \"DEV\"."),
       title: createPageSchema.shape.title.describe("Page title."),
@@ -142,36 +216,26 @@ export const writeToolManifests: ToolManifest[] = [
         "\"markdown\" (default, converted with the supported subset) or \"storage\" (raw XHTML passed through).",
       ),
       parent: createPageSchema.shape.parent.describe(
-        "Optional content id of the parent page; the new page becomes its child.",
+        "Optional content id of the direct parent page; the new page becomes its child.",
       ),
     },
-    providers: ["server"],
+    providers: ["server", "cloud"],
     readOnly: false,
-    handler: async (args, ctx) => {
-      const { spaceKey, title, body, bodyFormat, parent } = parseToolArgs(createPageSchema, args, "cf_create_page");
-
-      const payload: Record<string, unknown> = {
-        type: "page",
-        title,
-        space: { key: spaceKey },
-        body: { storage: { value: resolveBodyStorage(body, bodyFormat), representation: "storage" } },
-      };
-      if (parent !== undefined) payload.ancestors = [{ id: parent }];
-
-      const page = await ctx.provider.client.post(`${SERVER_API_PREFIX}/content`, { body: payload });
-      return pageWriteCard(ctx, page, { title, spaceKey });
-    },
+    handler: dispatchByProvider(createPageSchema, "cf_create_page", {
+      server: serverCreatePage,
+      cloud: cloudCreatePage,
+    }),
   },
   {
     name: "cf_update_page",
     title: "Update page",
     description:
       "Update a Confluence page's title and/or body with a mandatory optimistic lock: the current " +
-      "page version is fetched, the write carries version.number + 1, and on HTTP 409 (concurrent " +
-      "edit) the page is re-fetched and the write retried exactly once — a second conflict surfaces " +
-      "a structured CONFLICT error instead of retrying again. body follows the same Markdown-subset / " +
-      "storage rules as cf_create_page; an optional message is stored as the version message. " +
-      "Confluence Server / Data Center only.",
+      "page version is fetched, the write carries version.number + 1 (Cloud v2 requires the " +
+      "current version number in the payload), and on HTTP 409 (concurrent edit) the page is " +
+      "re-fetched and the write retried exactly once — a second conflict surfaces a structured " +
+      "CONFLICT error instead of retrying again. body follows the same Markdown-subset / storage " +
+      "rules as cf_create_page; an optional message is stored as the version message.",
     inputSchema: {
       id: updatePageArgs.shape.id.describe("Confluence content id of the page."),
       title: updatePageArgs.shape.title.describe("New page title (optional)."),
@@ -183,59 +247,30 @@ export const writeToolManifests: ToolManifest[] = [
       ),
       message: updatePageArgs.shape.message.describe("Optional version message, e.g. \"added runbook section\"."),
     },
-    providers: ["server"],
+    providers: ["server", "cloud"],
     readOnly: false,
-    handler: async (args, ctx) => {
-      const { id, title, body, bodyFormat, message } = parseToolArgs(updatePageSchema, args, "cf_update_page");
-      const storageBody = body === undefined ? undefined : resolveBodyStorage(body, bodyFormat);
-
-      const updated = await withOptimisticLock({
-        fetchCurrent: () => fetchPageVersion(ctx, id),
-        apply: async (current) => {
-          const version: Record<string, unknown> = { number: current.version + 1 };
-          if (message !== undefined) version.message = message;
-
-          const payload: Record<string, unknown> = {
-            id,
-            type: "page",
-            version,
-            title: title ?? titleOf(current.page),
-          };
-          if (storageBody !== undefined) {
-            payload.body = { storage: { value: storageBody, representation: "storage" } };
-          }
-          return ctx.provider.client.put(`${SERVER_API_PREFIX}/content/${encodeURIComponent(id)}`, { body: payload });
-        },
-      });
-
-      return pageWriteCard(ctx, updated);
-    },
+    handler: dispatchByProvider(updatePageSchema, "cf_update_page", {
+      server: serverUpdatePage,
+      cloud: cloudUpdatePage,
+    }),
   },
   {
     name: "cf_delete_page",
     title: "Delete page (to trash)",
     description:
-      "Move a Confluence page to the trash (DELETE /rest/api/content/{id}) and return a trashed " +
-      "confirmation card. The page is NOT permanently purged: restoring or purging trashed pages " +
-      "is a separate server-side administration operation this tool deliberately does not expose. " +
-      "Confluence Server / Data Center only.",
+      "Move a Confluence page to the trash (Server: DELETE /rest/api/content/{id}; Cloud: v2 " +
+      "DELETE /pages/{id}, never purge) and return a trashed confirmation card. The page is NOT " +
+      "permanently purged: restoring or purging trashed pages is a separate server-side " +
+      "administration operation this tool deliberately does not expose.",
     inputSchema: {
       id: pageIdSchema.shape.id.describe("Confluence content id of the page."),
     },
-    providers: ["server"],
+    providers: ["server", "cloud"],
     readOnly: false,
-    handler: async (args, ctx) => {
-      const { id } = parseToolArgs(pageIdSchema, args, "cf_delete_page");
-      await ctx.provider.client.delete(`${SERVER_API_PREFIX}/content/${encodeURIComponent(id)}`);
-      return {
-        id,
-        status: "trashed",
-        trashed: true,
-        note:
-          "The page was moved to the Confluence trash. Permanent purge is a separate server-side " +
-          "operation and is not performed by this tool.",
-      };
-    },
+    handler: dispatchByProvider(pageIdSchema, "cf_delete_page", {
+      server: serverDeletePage,
+      cloud: cloudDeletePage,
+    }),
   },
   {
     name: "cf_add_label",
@@ -243,41 +278,34 @@ export const writeToolManifests: ToolManifest[] = [
     description:
       "Add a single global label to a piece of Confluence content (one call adds one label; call " +
       "again for more) and return the labels now on the page as compact {id, name, prefix} entries. " +
-      "Confluence Server / Data Center only.",
+      "Both providers write via the v1 label endpoint (the Cloud v2 label group is read-only).",
     inputSchema: {
       id: labelNameSchema.shape.id.describe("Confluence content id."),
       name: labelNameSchema.shape.name.describe("Label name to add, e.g. \"runbook\"."),
     },
-    providers: ["server"],
+    providers: ["server", "cloud"],
     readOnly: false,
-    handler: async (args, ctx) => {
-      const { id, name } = parseToolArgs(labelNameSchema, args, "cf_add_label");
-      await ctx.provider.client.post(`${SERVER_API_PREFIX}/content/${encodeURIComponent(id)}/label`, {
-        body: [{ prefix: "global", name }],
-      });
-      const labels = await fetchLabels(ctx, id);
-      return { id, added: name, size: labels.length, labels };
-    },
+    handler: dispatchByProvider(labelNameSchema, "cf_add_label", {
+      server: serverAddLabel,
+      cloud: cloudAddLabel,
+    }),
   },
   {
     name: "cf_remove_label",
     title: "Remove label",
     description:
       "Remove one label (by name) from a piece of Confluence content and return the labels that " +
-      "remain as compact {id, name, prefix} entries. Confluence Server / Data Center only.",
+      "remain as compact {id, name, prefix} entries. Both providers use the v1 label endpoint " +
+      "(the Cloud v2 label group is read-only).",
     inputSchema: {
       id: labelNameSchema.shape.id.describe("Confluence content id."),
       name: labelNameSchema.shape.name.describe("Name of the label to remove."),
     },
-    providers: ["server"],
+    providers: ["server", "cloud"],
     readOnly: false,
-    handler: async (args, ctx) => {
-      const { id, name } = parseToolArgs(labelNameSchema, args, "cf_remove_label");
-      await ctx.provider.client.delete(`${SERVER_API_PREFIX}/content/${encodeURIComponent(id)}/label`, {
-        query: { name },
-      });
-      const labels = await fetchLabels(ctx, id);
-      return { id, removed: name, size: labels.length, labels };
-    },
+    handler: dispatchByProvider(labelNameSchema, "cf_remove_label", {
+      server: serverRemoveLabel,
+      cloud: cloudRemoveLabel,
+    }),
   },
 ];

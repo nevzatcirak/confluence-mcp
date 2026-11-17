@@ -1,53 +1,45 @@
 /**
- * Confluence Cloud adapter — seam only (Phase 0).
+ * Confluence Cloud adapter.
  *
- * The Cloud v2 REST API adapter arrives in Phase 4. Until then:
- * - the provider is advertised as `available: false`, so the registry refuses
- *   every tool call with a structured PROVIDER_UNAVAILABLE error, and
- * - the client itself also fails every call with the same error, so nothing
- *   can reach the network through this provider even if invoked directly.
+ * Base path: `<CONFLUENCE_URL>/wiki`. The v2 REST API lives under
+ * `/wiki/api/v2`, the legacy v1 REST API under `/wiki/rest/api`; both coexist
+ * and both accept the same auth. v2 has no search endpoint, so Cloud search
+ * (and all label writes) go through v1 — everything else is v2.
  *
- * Wire details recorded for the Phase 4 adapter:
- * - REST base: `<CONFLUENCE_URL>/wiki/api/v2` (v2) and `<CONFLUENCE_URL>/wiki/rest/api` (v1).
- * - Auth: CONFLUENCE_TOKEN -> Bearer, or CONFLUENCE_USERNAME +
- *   CONFLUENCE_PASSWORD -> Basic.
- * - Pagination: `limit` + opaque cursor from `_links.next` (CLOUD_PAGINATION).
+ * Auth: CONFLUENCE_CLOUD_EMAIL + CONFLUENCE_CLOUD_API_TOKEN ->
+ *       `Authorization: Basic base64(email:apiToken)` (primary), or
+ *       CONFLUENCE_TOKEN -> `Authorization: Bearer <token>` (OAuth access token).
+ * Config validation guarantees exactly one of the two.
+ *
+ * Pagination: Cloud pages exclusively by cursor — `limit` plus the opaque
+ * `cursor` token from the envelope's `_links.next` URL (v2 and Cloud v1
+ * alike). The cursor is passed back verbatim; an absent `_links.next` means
+ * the listing is exhausted.
  */
 
 import type { ConfluenceConfig } from "../../core/config.js";
-import { ERROR_CODES, ToolError } from "../../core/errors.js";
 import type { ProviderContext } from "../../core/provider.js";
 import { CLOUD_PAGINATION } from "../../core/provider.js";
-import { RestClient, type RequestOptions } from "../../core/restClient.js";
+import { RestClient } from "../../core/restClient.js";
 
-/** Structured failure used for every Cloud call until the Phase 4 adapter lands. */
-export function cloudUnavailableError(): ToolError {
-  return new ToolError(
-    ERROR_CODES.PROVIDER_UNAVAILABLE,
-    "The Confluence Cloud adapter is not implemented yet — Cloud v2 API arrives in Phase 4.",
-    { provider: "cloud" },
-  );
-}
+/** Cloud v2 REST API path prefix (relative to the `/wiki` base). */
+export const CLOUD_V2_API_PREFIX = "/api/v2";
 
-/** REST client that fails every request with PROVIDER_UNAVAILABLE. */
-class CloudSeamClient extends RestClient {
-  override async request<T = unknown>(_path: string, _opts: RequestOptions = {}): Promise<T> {
-    throw cloudUnavailableError();
-  }
-}
+/** Cloud legacy v1 REST API path prefix (relative to the `/wiki` base). */
+export const CLOUD_V1_API_PREFIX = "/rest/api";
 
+/** Full REST base: the instance URL plus Confluence Cloud's `/wiki` context path. */
 export function cloudBaseUrl(config: ConfluenceConfig): string {
-  // Unlike Server/DC there is no public default: the instance URL is required.
-  return config.url ?? "";
+  return config.url ? `${config.url}/wiki` : "";
 }
 
 export function cloudAuthHeaders(config: ConfluenceConfig): Record<string, string> {
+  if (config.cloudEmail && config.cloudApiToken) {
+    const basic = Buffer.from(`${config.cloudEmail}:${config.cloudApiToken}`).toString("base64");
+    return { Authorization: `Basic ${basic}` };
+  }
   if (config.token) {
     return { Authorization: `Bearer ${config.token}` };
-  }
-  if (config.username && config.password) {
-    const basic = Buffer.from(`${config.username}:${config.password}`).toString("base64");
-    return { Authorization: `Basic ${basic}` };
   }
   return {};
 }
@@ -55,8 +47,8 @@ export function cloudAuthHeaders(config: ConfluenceConfig): Record<string, strin
 export function createCloudProvider(config: ConfluenceConfig): ProviderContext {
   return {
     id: "cloud",
-    available: false,
-    client: new CloudSeamClient(cloudBaseUrl(config), {
+    available: true,
+    client: new RestClient(cloudBaseUrl(config), {
       authHeaders: cloudAuthHeaders(config),
       defaultHeaders: config.customHeaders,
     }),

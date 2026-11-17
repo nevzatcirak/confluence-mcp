@@ -72,39 +72,68 @@ describe("loadConfig", () => {
 });
 
 describe("loadConfig (cloud)", () => {
+  const CLOUD_ENV = {
+    CONFLUENCE_PROVIDER: "cloud",
+    CONFLUENCE_URL: "https://confluence.example.com",
+  } as const;
+
   it("accepts the cloud provider with a token and the instance URL", () => {
-    const { config, problems } = loadConfig({
-      CONFLUENCE_PROVIDER: "cloud",
-      CONFLUENCE_URL: "https://confluence.example.com",
-      CONFLUENCE_TOKEN: "tok-2",
-    });
+    const { config, problems } = loadConfig({ ...CLOUD_ENV, CONFLUENCE_TOKEN: "tok-2" });
     expect(problems).toEqual([]);
     expect(config.provider).toBe("cloud");
     expect(config.url).toBe("https://confluence.example.com");
   });
 
-  it("accepts a username+password pair on cloud too", () => {
+  it("accepts a complete email + API-token pair as the Cloud credential", () => {
+    const { config, problems } = loadConfig({
+      ...CLOUD_ENV,
+      CONFLUENCE_CLOUD_EMAIL: "dev1@example.com",
+      CONFLUENCE_CLOUD_API_TOKEN: "atok-1",
+    });
+    expect(problems).toEqual([]);
+    expect(hasAuth(config)).toBe(true);
+    expect(config.cloudEmail).toBe("dev1@example.com");
+    expect(config.cloudApiToken).toBe("atok-1");
+  });
+
+  it("rejects an incomplete email + API-token pair (each half alone)", () => {
+    const emailOnly = loadConfig({ ...CLOUD_ENV, CONFLUENCE_CLOUD_EMAIL: "dev1@example.com" });
+    expect(emailOnly.problems).toHaveLength(1);
+    expect(emailOnly.problems[0].field).toBe("CONFLUENCE_CLOUD_API_TOKEN");
+    expect(emailOnly.problems[0].message).toContain("must be set together");
+    expect(hasAuth(emailOnly.config)).toBe(false);
+
+    const tokenOnly = loadConfig({ ...CLOUD_ENV, CONFLUENCE_CLOUD_API_TOKEN: "atok-1" });
+    expect(tokenOnly.problems).toHaveLength(1);
+    expect(tokenOnly.problems[0].field).toBe("CONFLUENCE_CLOUD_EMAIL");
+  });
+
+  it("rejects both Cloud credential sets being present at once", () => {
     const { problems } = loadConfig({
-      CONFLUENCE_PROVIDER: "cloud",
-      CONFLUENCE_URL: "https://confluence.example.com",
+      ...CLOUD_ENV,
+      CONFLUENCE_CLOUD_EMAIL: "dev1@example.com",
+      CONFLUENCE_CLOUD_API_TOKEN: "atok-1",
+      CONFLUENCE_TOKEN: "oauth-token",
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0].field).toBe("CONFLUENCE_TOKEN");
+    expect(problems[0].message).toContain("exactly one");
+  });
+
+  it("rejects Server/DC username+password credentials in cloud mode as server-only", () => {
+    const { config, problems } = loadConfig({
+      ...CLOUD_ENV,
       CONFLUENCE_USERNAME: "dev1",
       CONFLUENCE_PASSWORD: "pass1",
     });
-    expect(problems).toEqual([]);
+    expect(problems.some((p) => p.message.includes("Server/DC-only"))).toBe(true);
+    expect(hasAuth(config)).toBe(false);
   });
 
-  it("reports a problem when no cloud credential set is complete", () => {
-    const { problems } = loadConfig({
-      CONFLUENCE_PROVIDER: "cloud",
-      CONFLUENCE_URL: "https://confluence.example.com",
-    });
-    expect(problems.some((p) => p.field === "CONFLUENCE_TOKEN")).toBe(true);
-  });
-
-  it("requireCompleteConfig still requires the URL on cloud (instance-specific base)", () => {
-    const { config } = loadConfig({ CONFLUENCE_PROVIDER: "cloud", CONFLUENCE_TOKEN: "tok-2" });
-    const fields = requireCompleteConfig(config).map((p) => p.field);
-    expect(fields).toContain("CONFLUENCE_URL");
+  it("requireCompleteConfig mirrors the Cloud credential rules on the request path", () => {
+    const { config } = loadConfig({ CONFLUENCE_PROVIDER: "cloud", CONFLUENCE_CLOUD_EMAIL: "dev1@example.com" });
+    const fields = requireCompleteConfig(config).map((p) => p.field).sort();
+    expect(fields).toEqual(["CONFLUENCE_CLOUD_API_TOKEN", "CONFLUENCE_URL"]);
   });
 });
 

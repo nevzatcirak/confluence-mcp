@@ -100,10 +100,13 @@ describe("registerAllTools", () => {
     expect(advertised).toEqual(["cf_get_page"]);
   });
 
-  it("returns structured PROVIDER_UNAVAILABLE for tools on the unimplemented cloud provider", async () => {
+  it("returns structured PROVIDER_UNAVAILABLE for tools on an unavailable provider", async () => {
     const fake = new FakeServer();
     const { config } = loadConfig({ CONFLUENCE_URL: "https://confluence.example.com", CONFLUENCE_TOKEN: "t" });
-    const cloudCtx: ToolCallContext = { config, provider: createCloudProvider(config) };
+    // A provider that exists but is unavailable (the registry's safety gate;
+    // both built-in providers are available, so this context is constructed
+    // by hand).
+    const unavailableCtx: ToolCallContext = { config, provider: { ...createServerProvider(config), id: "cloud", available: false } };
     const anyProvider: ToolManifest = {
       name: "cf_any_provider",
       title: "Any provider",
@@ -113,13 +116,12 @@ describe("registerAllTools", () => {
       readOnly: true,
       handler: async () => ({ ok: true }),
     };
-    registerAllTools(fake as unknown as McpServer, cloudCtx, [anyProvider]);
+    registerAllTools(fake as unknown as McpServer, unavailableCtx, [anyProvider]);
 
     const result = await fake.tools.get("cf_any_provider")!.handler({});
     expect(result).toMatchObject({ isError: true });
     const text = JSON.stringify((result as { content: [{ text: string }] }).content[0].text);
     expect(text).toContain("PROVIDER_UNAVAILABLE");
-    expect(text).toContain("Phase 4");
   });
 
   it("converts handler throws into structured errors", async () => {
@@ -182,17 +184,19 @@ describe("toolManifests (Phase 1 read + Phase 2 write tools)", () => {
     expect(toolManifests.filter((m) => !m.readOnly).map((m) => m.name).sort()).toEqual(EXPECTED_WRITE_TOOLS);
   });
 
-  it("marks every tool Server/DC-only and every read tool read-only", () => {
+  it("marks every tool as served by both providers and every read tool read-only", () => {
     for (const manifest of toolManifests) {
-      expect(manifest.providers).toEqual(["server"]);
+      expect(manifest.providers).toEqual(["server", "cloud"]);
       expect(manifest.readOnly).toBe(EXPECTED_READ_TOOLS.includes(manifest.name));
     }
   });
 
-  it("advertises 15 tools on server in normal mode, only the 10 read tools in read-only mode, nothing on cloud", () => {
+  it("advertises 15 tools on server in normal mode, only the 10 read tools in read-only mode, and the same 15 on cloud", () => {
     expect(selectManifests(toolManifests, "server", false)).toHaveLength(15);
     expect(selectManifests(toolManifests, "server", true).map((m) => m.name).sort()).toEqual(EXPECTED_READ_TOOLS);
-    expect(selectManifests(toolManifests, "cloud", false)).toEqual([]);
-    expect(selectManifests(toolManifests, "cloud", true)).toEqual([]);
+    expect(selectManifests(toolManifests, "cloud", false).map((m) => m.name).sort()).toEqual(
+      [...EXPECTED_READ_TOOLS, ...EXPECTED_WRITE_TOOLS].sort(),
+    );
+    expect(selectManifests(toolManifests, "cloud", true).map((m) => m.name).sort()).toEqual(EXPECTED_READ_TOOLS);
   });
 });

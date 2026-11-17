@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * confluence-mcp entry point: stdio MCP server for Confluence Server / DC,
- * with a Cloud adapter seam.
+ * confluence-mcp entry point: stdio MCP server for Confluence Server / DC and
+ * Confluence Cloud.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -13,14 +13,22 @@ import { registerAllTools } from "./tools/registry.js";
 import { log, registerSecrets } from "./util/logger.js";
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 
-const HELP = `${SERVER_NAME} v${SERVER_VERSION} — MCP server for Confluence Server / Data Center (Cloud adapter arrives in Phase 4).
+const HELP = `${SERVER_NAME} v${SERVER_VERSION} — MCP server for Confluence Server / Data Center and Cloud.
 
 Environment:
   CONFLUENCE_PROVIDER        "server" (default) | "cloud"
   CONFLUENCE_URL             Instance base URL, e.g. https://confluence.example.com (required)
+
+Server/DC auth:
   CONFLUENCE_TOKEN           Personal access token -> Authorization: Bearer
   CONFLUENCE_USERNAME        Used with CONFLUENCE_PASSWORD -> Authorization: Basic
   CONFLUENCE_PASSWORD        See CONFLUENCE_USERNAME
+
+Cloud auth (exactly one of):
+  CONFLUENCE_CLOUD_EMAIL     Atlassian account email, with CONFLUENCE_CLOUD_API_TOKEN -> Basic
+  CONFLUENCE_CLOUD_API_TOKEN Confluence Cloud API token
+  CONFLUENCE_TOKEN           OAuth access token -> Authorization: Bearer
+
   CONFLUENCE_READ_ONLY       "true" hides all write tools
   CONFLUENCE_CUSTOM_HEADERS  Comma-separated "Name: Value" pairs
 
@@ -44,7 +52,7 @@ async function main(): Promise<void> {
   if (handleCliArgs(process.argv.slice(2))) return;
 
   const { config, problems } = loadConfig();
-  registerSecrets(config.token, config.password);
+  registerSecrets(config.token, config.password, config.cloudApiToken);
   for (const problem of problems) {
     log(`config: ${problem.field}: ${problem.message}${problem.hint ? ` (hint: ${problem.hint})` : ""}`);
   }
