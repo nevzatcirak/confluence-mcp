@@ -1,0 +1,59 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags: [ 'v*' ]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+          cache: npm
+
+      - name: Guard — package name must be @nevzatcirak/confluence-mcp
+        run: |
+          PKG_NAME="$(npm pkg get name --workspaces=false | tr -d '"')"
+          echo "package.json name: ${PKG_NAME}"
+          if [ "${PKG_NAME}" != "@nevzatcirak/confluence-mcp" ]; then
+            echo "::error::Wrong package name '${PKG_NAME}' — expected '@nevzatcirak/confluence-mcp'. Refusing to publish."
+            exit 1
+          fi
+
+      - name: Guard — no organization references in sources
+        run: npm run check:org
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify lockfile covers linux native deps
+        shell: bash
+        run: |
+          grep -q "node_modules/@rollup/rollup-linux-x64-gnu" package-lock.json \
+            || { echo "::error::lockfile missing linux native deps - regenerate on linux or with npm >= 9 (npm/cli#4828)"; exit 1; }
+          grep -q "node_modules/@esbuild/linux-x64" package-lock.json \
+            || { echo "::error::lockfile missing esbuild linux native deps - regenerate on linux or with npm >= 9 (npm/cli#4828)"; exit 1; }
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
